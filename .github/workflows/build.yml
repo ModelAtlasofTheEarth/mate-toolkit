@@ -1,0 +1,60 @@
+# Reusable workflow: model repos call this with
+#   jobs: { mate: { uses: ModelAtlasofTheEarth/mate-toolkit/.github/workflows/build.yml@v0 } }
+# It runs against the CALLER's checkout (the model repo). The toolkit itself is installed by
+# the caller's environment.yml (single source of truth for the pinned version), so local and
+# CI behave identically. No GitHub Pages here — presentation is the website's job.
+name: build-mate-model
+
+on:
+  workflow_call:
+    inputs:
+      render:
+        description: "also run `mate render` and upload the site artifact"
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # commit the regenerated crate back to the model repo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history -> git provenance in the crate
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml   # the model repo's env (installs the toolkit + quarto)
+          cache-environment: true
+
+      - name: build + validate
+        shell: bash -el {0}
+        run: |
+          mate build .
+          mate validate .
+
+      - name: render
+        if: ${{ inputs.render }}
+        shell: bash -el {0}
+        run: mate render . -o _site
+
+      - name: commit regenerated crate
+        shell: bash -el {0}
+        run: |
+          git config user.name  "mate-bot"
+          git config user.email "mate-bot@users.noreply.github.com"
+          git add ro-crate-metadata.json
+          if git diff --cached --quiet; then
+            echo "crate unchanged"
+          else
+            git commit -m "Update ro-crate-metadata.json [skip ci]"
+            git push
+          fi
+
+      - name: upload site artifact
+        if: ${{ inputs.render }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: _site

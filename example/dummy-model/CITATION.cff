@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: "Rayleigh–Bénard convection in a 2-D box (demo)"
+message: "Demo data — do not cite."
+authors:
+  - family-names: Sandiford
+    given-names: Dan
+    orcid: https://orcid.org/0000-0002-1270-4377
+  - family-names: Citizen
+    given-names: Jane
+license: CC-BY-4.0

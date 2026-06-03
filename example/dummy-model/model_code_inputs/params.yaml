@@ -1,0 +1,7 @@
+rayleigh_number: 1.0e6
+resolution: 128
+aspect_ratio: 1.0
+boundary_conditions:
+  top: free-slip
+  bottom: free-slip
+output_every: 50
