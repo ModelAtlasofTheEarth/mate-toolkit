@@ -274,16 +274,18 @@ def _merge(existing, fresh):
     return out
 
 
-def _build_fresh(repo_dir, reverse_engineer, git_opts, seed_authored=True):
+def _build_fresh(repo_dir, reverse_engineer, git_opts):
     crate = ROCrate()
 
-    # 1) authored root metadata. People become proper Person entities referenced by @id.
-    # seed_authored=False skips the front-matter seed entirely — used by `from-issue`, where
-    # the issue (not front-matter) is the authored source.
-    root_props, source = ({}, "none (authored externally)")
-    if seed_authored:
+    # 1) authored root metadata. The CRATE is the single authored source of truth: build never
+    # reads a sidecar seed (no `.mate/metadata.yml`, no README front-matter). Authoring lands in
+    # the crate via `mate seed`/`describe`, the issue form (`from-issue`), or Crate-O — and merge
+    # preserves it. The ONE exception is migrating an OLD-engine repo (`--reverse-engineer`),
+    # which lifts root metadata from its `.metadata_trail` issue dict.
+    root_props, source = ({}, "none (crate is the authored source)")
+    if reverse_engineer:
         from .profile import load_profile
-        root_props, source = load_root_metadata(repo_dir, reverse_engineer,
+        root_props, source = load_root_metadata(repo_dir, reverse_engineer=True,
                                                  profile=load_profile(repo_dir))
     for k, v in root_props.items():
         if k == "creator":
@@ -309,8 +311,10 @@ def _build_fresh(repo_dir, reverse_engineer, git_opts, seed_authored=True):
 
     doc = crate.metadata.generate()
 
-    # 4) external data payloads (NCI/Zenodo/…) as remote entities (front-matter seed only)
-    payload_ids = add_payload(doc, repo_dir) if seed_authored else []
+    # 4) external data payloads (NCI/Zenodo/…) as remote entities. In normal operation these
+    #    live IN the crate (added by the issue form / editor) and are merge-preserved; only the
+    #    old-engine migration still lifts them from a front-matter seed.
+    payload_ids = add_payload(doc, repo_dir) if reverse_engineer else []
 
     summary = {
         "repo": str(repo_dir),
@@ -328,17 +332,16 @@ def _build_fresh(repo_dir, reverse_engineer, git_opts, seed_authored=True):
     return doc, summary
 
 
-def build_crate(repo_dir, out_path=None, reverse_engineer=False, merge=True,
-                seed_authored=True, git_opts=None):
-    """Build (or update) a repo's crate.
+def build_crate(repo_dir, out_path=None, reverse_engineer=False, merge=True, git_opts=None):
+    """Build (or update) a repo's crate — a PURE projection of the filesystem + git, merged onto
+    whatever is already authored in the crate.
 
     merge=True (default): if a crate already exists, preserve its authored/enriched content and
-    only refresh the derived layer. reverse_engineer forces a clean migration (no merge), since
-    it is seeding from an old-engine source. seed_authored=False skips the front-matter seed
-    (used by `from-issue`).
+    only refresh the derived layer (manifest, git provenance). reverse_engineer forces a clean
+    migration (no merge) from an old-engine source.
     """
     repo_dir = Path(repo_dir).resolve()
-    fresh, summary = _build_fresh(repo_dir, reverse_engineer, git_opts, seed_authored=seed_authored)
+    fresh, summary = _build_fresh(repo_dir, reverse_engineer, git_opts)
 
     crate_path = repo_dir / "ro-crate-metadata.json"
     if merge and not reverse_engineer and crate_path.exists():

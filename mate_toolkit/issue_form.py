@@ -9,25 +9,53 @@ _LIST_HELP = "Comma-separated."
 
 # Generic fallbacks. A profile's `form:` block overrides any of these, so domain wording
 # ("model", "M@TE") lives in the profile — never hardcoded in the engine.
-_INTRO = ("Describe your dataset. On submit, an automated action writes these values into the "
-          "RO-Crate (`ro-crate-metadata.json`) — the single source of truth. "
-          "**Edit the crate afterwards (CLI / editor), not by reopening this issue.**")
+_INTRO = ("Add or edit metadata for this dataset — or for one specific folder/file in it (pick it "
+          "above; leave as the root for the dataset as a whole). On submit, an automated action "
+          "writes your answers into the RO-Crate (`ro-crate-metadata.json`) — the single source of "
+          "truth. **Edit the crate afterwards (CLI / Crate-O), not by reopening this issue.**")
 _FORM_DEFAULTS = {
-    "name": "New dataset",
-    "description": "Describe a dataset; an action writes it into the crate.",
-    "title": "[dataset] ",
-    "labels": ["dataset"],
+    "name": "Add / edit metadata",
+    "description": "Add or edit metadata on an entity in the crate (defaults to the dataset root).",
+    "title": "[edit] ",
+    "labels": ["mate-edit"],
 }
 
 
-def form_spec(profile):
-    """Ordered list of field specs shared by the form generator and the issue parser."""
+_ROOT_OPT = "(the dataset itself / root)"
+_TYPE_KEEP = "(keep current)"
+
+
+def form_spec(profile, dirs=None):
+    """Ordered list of field specs shared by the form generator and the issue parser.
+
+    The form is a generic ENTITY editor: a path selector (defaults to the root) + an optional
+    type tag + the universal/root fields. `dirs` (live first-level folders, passed by the build
+    workflow) populate the path dropdown; without them the path is a free-text input. This is a
+    GitHub-surface concern, so it's a parameter — NOT something the profile knows about."""
     specs = []
+    # entity selector: which thing to edit. "(root)" -> the dataset itself. The LABEL must be
+    # identical whether it renders as a dropdown (form has live dirs) or a text box (parser, no
+    # dirs) — the parser keys on labels, so they can't drift.
+    if dirs:
+        specs.append({"id": "path", "role": "path", "input": "dropdown", "required": False,
+                      "label": "Which entity to edit", "options": [_ROOT_OPT] + list(dirs)})
+    else:
+        specs.append({"id": "path", "role": "path", "input": "text", "required": False,
+                      "label": "Which entity to edit",
+                      "help": "folder/file path; blank = the dataset root"})
+    # optional type tag (type-SPECIFIC fields are edited in Crate-O, not here — static form)
+    type_opts = [_TYPE_KEEP] + list((profile.get("component_types", {}) or {}).keys())
+    if len(type_opts) > 1:
+        specs.append({"id": "entity_type", "role": "type", "input": "dropdown", "required": False,
+                      "label": "Type tag (optional — type-specific fields are edited in Crate-O)",
+                      "options": type_opts})
+
     for name, fdef in (profile.get("root", {}) or {}).get("fields", {}).items():
         specs.append({
             "id": name, "label": fdef.get("label", name), "input": fdef.get("input", "text"),
             "property": fdef.get("property", name), "options": fdef.get("options"),
-            "required": bool(fdef.get("required")), "enrich": fdef.get("enrich"), "target": "root",
+            "required": False,   # an EDIT form has no required fields (you may touch one entity)
+            "enrich": fdef.get("enrich"), "target": "root",
         })
     payload = profile.get("payload", {}) or {}
     if payload.get("backends"):
@@ -60,23 +88,28 @@ def _element(spec):
     return element
 
 
-def build_issue_form(profile):
+def build_issue_form(profile, dirs=None, title=None, labels=None, name=None, intro=None):
+    """Build the GitHub edit-entity issue form. `dirs`/`title`/`labels` are GITHUB-SURFACE knobs
+    (passed by the build workflow), kept OUT of the profile. `name`/`intro` are display text and
+    may come from the profile's `form:` block, but a param overrides. The title prefix the
+    workflow gates on lives here, not in the contract."""
     form = profile.get("form", {}) or {}
-    body = [{"type": "markdown", "attributes": {"value": form.get("intro", _INTRO)}}]
-    body += [_element(s) for s in form_spec(profile)]
+    intro = intro or form.get("intro", _INTRO)
+    body = [{"type": "markdown", "attributes": {"value": intro}}]
+    body += [_element(s) for s in form_spec(profile, dirs=dirs)]
     return {
-        "name": form.get("name", _FORM_DEFAULTS["name"]),
+        "name": name or form.get("name", _FORM_DEFAULTS["name"]),
         "description": form.get("description", _FORM_DEFAULTS["description"]),
-        "title": form.get("title", _FORM_DEFAULTS["title"]),
-        "labels": form.get("labels", _FORM_DEFAULTS["labels"]),
+        "title": title or _FORM_DEFAULTS["title"],          # GitHub gate prefix — surface, not profile
+        "labels": labels or _FORM_DEFAULTS["labels"],
         "body": body,
     }
 
 
-def write_issue_form(profile, out_path):
+def write_issue_form(profile, out_path, dirs=None, title=None, labels=None):
     with open(out_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(build_issue_form(profile), f, sort_keys=False,
-                       default_flow_style=False, allow_unicode=True)
+        yaml.safe_dump(build_issue_form(profile, dirs=dirs, title=title, labels=labels), f,
+                       sort_keys=False, default_flow_style=False, allow_unicode=True)
     return out_path
 
 

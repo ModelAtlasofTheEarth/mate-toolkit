@@ -1,56 +1,26 @@
-"""from-issue: turn a submitted GitHub issue-form into authored crate metadata.
+"""from-issue: apply a submitted GitHub edit-entity issue-form to the crate.
 
-The issue is *create-time capture* — its answers are written into the crate (the single source
-of truth) and the issue is not authoritative thereafter. Mapping is drift-free: the issue form
-and this parser share `issue_form.form_spec`, and each field's id → schema.org `property`.
+The issue form is a generic ENTITY editor (target defaults to the root). Its answers become an
+edit-intent — `(path, @type, {property: value})` — applied through the SAME `edit_entity` the
+CLI uses, so the issue, the CLI, and Crate-O can't drift. Root-only references (a publication
+citation, an external data payload) are handled as a post-pass, since they materialise contextual
+/ external entities rather than set a plain property.
+
+The issue is create/edit-time capture only; the crate is authoritative thereafter. The mapping
+is drift-free: the form generator and this parser share `issue_form.form_spec`.
 """
 import json
 import re
 from pathlib import Path
 
-from .build_crate import build_crate, _root_entity, _person
-from .issue_form import form_spec
+from .build_crate import _root_entity
+from .describe import edit_entity, command_for
+from .issue_form import form_spec, _ROOT_OPT, _TYPE_KEEP
 from .payload import _adapter
 from .profile import load_profile
 
 _HEAD = re.compile(r"^###\s+(?P<label>.+?)\s*$", re.M)
 _EMPTY = ("", "_No response_", "_no response_")
-
-
-_TYPE_RE = re.compile(r"\[describe:([A-Za-z]+)\]")
-
-
-def apply_describe_issue(repo_dir, body, type_=None, title=None):
-    """Parse a submitted describe-<type> issue and write it into the crate via `describe`.
-    The type comes from --type or is parsed from the issue title `[describe:TYPE]`."""
-    from .issue_form import component_form_spec
-    from .describe import describe
-    from .profile import load_profile
-
-    if not type_ and title:
-        m = _TYPE_RE.search(title)
-        type_ = m.group(1) if m else None
-    if not type_:
-        return {"error": "could not determine component type (need --type or a '[describe:TYPE]' title)"}
-
-    parsed = parse_issue_body(body)
-    specs = {s["label"]: s for s in component_form_spec(load_profile(repo_dir), type_)}
-    target, name, description, sets = None, None, None, []
-    for label, spec in specs.items():
-        val = parsed.get(label, "")
-        if val in _EMPTY:
-            continue
-        if spec.get("role") == "target":
-            target = val.rstrip("/") + "/"
-        elif spec.get("property") == "name":
-            name = val
-        elif spec.get("property") == "description":
-            description = val
-        elif spec.get("property"):
-            sets.append(f"{spec['property']}={val}")
-    if not target:
-        return {"error": "no target folder given in the issue"}
-    return describe(repo_dir, target, type_=type_, name=name, description=description, sets=sets)
 
 
 def parse_issue_body(body):
@@ -63,72 +33,75 @@ def parse_issue_body(body):
     return out
 
 
-def _slug(s):
-    return re.sub(r"[^a-z0-9]+", "-", (s or "person").lower()).strip("-")
-
-
-def _ensure_person(doc, spec):
-    pid = spec.get("@id") or "#person-" + _slug(spec.get("name"))
-    if not any(e.get("@id") == pid for e in doc["@graph"]):
-        ent = {"@id": pid, "@type": "Person"}
-        if spec.get("name"):
-            ent["name"] = spec["name"]
-        doc["@graph"].append(ent)
-    return {"@id": pid}
-
-
 def apply_issue(repo_dir, body, out_path=None):
     repo_dir = Path(repo_dir).resolve()
     profile = load_profile(repo_dir)
     parsed = parse_issue_body(body)
-    specs = {s["label"]: s for s in form_spec(profile)}
+    specs = {s["label"]: s for s in form_spec(profile)}   # labels are stable regardless of dirs
 
-    # derived-only base (ignore front-matter; the issue is the authored source), merged with any
-    # existing crate so a re-submission updates without losing the file manifest.
-    doc, summary = build_crate(repo_dir, merge=True, seed_authored=False)
-    root = _root_entity(doc)
+    target, type_ = ".", None
+    name = description = publication = None
+    authors, sets = [], []
+    backend = ref = None
 
-    applied, backend, ref = [], None, None
     for label, spec in specs.items():
         val = parsed.get(label, "")
         if val in _EMPTY:
             continue
-        if spec["target"] == "payload":
+        role = spec.get("role")
+        if role == "path":
+            target = "." if val in (_ROOT_OPT, "(root)") else val.strip()
+        elif role == "type":
+            type_ = None if val == _TYPE_KEEP else val.strip()
+        elif spec.get("target") == "payload":
             if spec["id"] == "payload_backend":
                 backend = val
             else:
                 ref = val
-            continue
-        prop, inp = spec["property"], spec["input"]
-        if inp == "people":
-            people = [_person(line) for line in val.splitlines() if line.strip()]
-            root["creator"] = [_ensure_person(doc, p) for p in people]
-        elif inp == "list":
-            root[prop] = [x.strip() for x in val.split(",") if x.strip()]
-        elif inp == "dropdown" and prop == "license":
-            if val != "(other URL)":
-                root[prop] = {"@id": val}
         elif spec.get("enrich") == "publication":
-            # a citation is a reference to another entity, so enrich can resolve it
-            root[prop] = {"@id": val if val.startswith("http") else f"https://doi.org/{val}"}
+            publication = val
         else:
-            root[prop] = val
-        applied.append(prop)
+            prop, inp = spec["property"], spec["input"]
+            if inp == "people":
+                authors = [line for line in val.splitlines() if line.strip()]
+            elif prop == "name":
+                name = val
+            elif prop == "description":
+                description = val
+            elif inp == "dropdown" and prop == "license" and val == "(other URL)":
+                continue
+            else:
+                sets.append(f"{prop}={val}")   # edit_entity shapes lists/license by the field def
 
-    if backend and backend not in ("(none)", "") and ref:
-        spec = {"backend": backend, ("record" if backend == "zenodo" else "url"): ref}
-        ent, backing, _ = _adapter(spec)
-        if ent["@id"]:
-            ent["about"] = {"@id": backing}
-            doc["@graph"] = [e for e in doc["@graph"] if e.get("additionalType") != "ExternalPayload"]
-            doc["@graph"].append(ent)
-            for e in doc["@graph"]:
-                if e.get("@id") == backing:
-                    e.setdefault("distribution", []).append({"@id": ent["@id"]})
-                if e.get("@id") == "./":
-                    e.setdefault("hasPart", []).append({"@id": ent["@id"]})
-            applied.append("payload")
+    # 1) the universal edit, via the shared editor (same code path as the CLI)
+    result = edit_entity(repo_dir, target, type_=type_, name=name, description=description,
+                         authors=authors or None, sets=sets or None)
+    if result.get("error"):
+        return result
+    tid = result.get("edited")
+    applied = list(result.get("applied", []))
 
-    out_path = out_path or str(repo_dir / "ro-crate-metadata.json")
-    Path(out_path).write_text(json.dumps(doc, indent=2))
-    return {"applied": applied, "out": out_path, "base_mode": summary.get("mode")}
+    # 2) root-only references (citation, external payload) — they create/link other entities
+    crate_path = Path(out_path) if out_path else repo_dir / "ro-crate-metadata.json"
+    doc = json.loads(crate_path.read_text())
+    root = _root_entity(doc)
+    if tid == "./":
+        if publication:
+            root["citation"] = {"@id": publication if publication.startswith("http")
+                                else f"https://doi.org/{publication}"}
+            applied.append("citation")
+        if backend and backend not in ("(none)", "") and ref:
+            ent, backing, _ = _adapter({"backend": backend,
+                                        ("record" if backend == "zenodo" else "url"): ref})
+            if ent["@id"]:
+                ent["about"] = {"@id": backing}
+                doc["@graph"] = [e for e in doc["@graph"] if e.get("additionalType") != "ExternalPayload"]
+                doc["@graph"].append(ent)
+                for e in doc["@graph"]:
+                    if e.get("@id") == "./":
+                        e.setdefault("hasPart", []).append({"@id": ent["@id"]})
+                applied.append("payload")
+        crate_path.write_text(json.dumps(doc, indent=2))
+
+    command = command_for(target, type_, name, description, authors, sets)
+    return {"applied": applied, "edited": tid, "command": command, "out": str(crate_path)}

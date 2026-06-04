@@ -47,14 +47,11 @@ jobs:
         shell: bash -el {0}
         env:
           ISSUE_BODY: ${{ inputs.issue_body }}    # via env, not interpolated into the script
-          ISSUE_TITLE: ${{ inputs.issue_title }}
         run: |
           printf '%s' "$ISSUE_BODY" > /tmp/issue.md
-          if [[ "$ISSUE_TITLE" == \[describe:* ]]; then
-            mate describe-from-issue . --body /tmp/issue.md --title "$ISSUE_TITLE"
-          else
-            mate from-issue . --body /tmp/issue.md
-          fi
+          # One generic edit-entity form (target defaults to root). --print-command writes the
+          # equivalent `mate` command to stdout; capture it for the confirmation comment.
+          mate from-issue . --body /tmp/issue.md --print-command > /tmp/mate_command.txt || true
 
       - name: build + validate
         shell: bash -el {0}
@@ -89,8 +86,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue comment "${{ inputs.issue_number }}" --body \
-            "✅ Your submission was written into \`ro-crate-metadata.json\`. Edit the crate (not this issue) to make further changes."
+          CMD=$(cat /tmp/mate_command.txt 2>/dev/null || true)
+          {
+            echo "✅ Applied to \`ro-crate-metadata.json\` — the single source of truth. Edit the crate (CLI / Crate-O), not this issue."
+            if [ -n "$CMD" ]; then
+              printf '\nThe command-line equivalent (run it locally next time to skip the round-trip):\n\n'
+              printf '```\n%s\n```\n' "$CMD"
+              echo "For type-specific fields, open the crate in Crate-O."
+            fi
+          } > /tmp/comment.md
+          gh issue comment "${{ inputs.issue_number }}" --body-file /tmp/comment.md
 
       - name: upload site artifact
         if: ${{ inputs.render }}

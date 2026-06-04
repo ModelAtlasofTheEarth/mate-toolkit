@@ -34,33 +34,42 @@ def main(argv=None):
                    help="escalate website-readiness problems (missing fields/eligibility) to "
                         "errors; without it they are informational warnings (build stays green)")
 
-    g = sub.add_parser("issue-form", help="generate a GitHub issue form (.yml) from the profile")
+    g = sub.add_parser("issue-form", help="generate the GitHub edit-entity issue form (.yml) from the profile")
     g.add_argument("-o", "--out", required=True, help="output path for the issue form yaml")
     g.add_argument("--repo", default=None, help="use this repo's .mate/profile.yml (else the builtin profile)")
-    g.add_argument("--type", dest="type_", help="generate a describe-<type> form for a component type (else the root form)")
-
-    di = sub.add_parser("describe-from-issue", help="apply a submitted describe-<type> issue to the crate")
-    di.add_argument("repo", nargs="?", default=".", help="repository directory (default: .)")
-    di.add_argument("--body", required=True, help="path to the issue body (or '-' for stdin)")
-    di.add_argument("--type", dest="type_", help="component type (else parsed from --title)")
-    di.add_argument("--title", help="issue title (used to parse '[describe:TYPE]')")
+    g.add_argument("--dir", action="append", dest="dirs", metavar="PATH",
+                   help="a live folder to offer in the path dropdown (repeatable; GitHub-surface knob)")
+    g.add_argument("--title", help="issue title prefix the build workflow gates on (default '[edit] ')")
 
     fi = sub.add_parser("from-issue", help="write a submitted issue-form's answers into the repo's crate")
     fi.add_argument("repo", nargs="?", default=".", help="repository directory (default: .)")
     fi.add_argument("--body", required=True, help="path to the issue body (or '-' for stdin)")
+    fi.add_argument("--print-command", action="store_true",
+                    help="also print the equivalent `mate` command for the applied edit")
 
     e = sub.add_parser("enrich", help="resolve PIDs in the crate (ORCID, publication DOI); best-effort")
     e.add_argument("repo", nargs="?", default=".", help="repository directory (default: .)")
 
-    d = sub.add_parser("describe", help="attach typed, schema-aware metadata to a directory's crate entity")
-    d.add_argument("target", help="directory to describe, e.g. model_results/")
+    d = sub.add_parser("describe", help="attach typed, schema-aware metadata to any entity (dir/file) in the crate")
+    d.add_argument("target", help="path to describe, e.g. model_results/ or recordings/x.csv")
     d.add_argument("--repo", default=".", help="repository directory (default: .)")
     d.add_argument("--type", dest="type_", help="component type (curated: Dataset, SoftwareSourceCode, … or any schema.org type)")
     d.add_argument("--name", help="human name")
     d.add_argument("--description", help="what it is / how it was made")
+    d.add_argument("--author", action="append", dest="authors", metavar="ORCID|\"Family, Given\"",
+                   help="author of THIS entity (repeatable); distinct from the root's creators")
     d.add_argument("--set", action="append", dest="sets", metavar="property=value",
                    help="set any schema.org/CodeMeta property (repeatable; the escape hatch)")
     d.add_argument("--list-fields", action="store_true", help="list the curated fields for --type (or all types) and exit")
+
+    s = sub.add_parser("seed", help="author the ROOT entity in the crate (== `describe .`) — the one-shot bootstrap")
+    s.add_argument("--repo", default=".", help="repository directory (default: .)")
+    s.add_argument("--name", help="title")
+    s.add_argument("--description", help="short description")
+    s.add_argument("--author", action="append", dest="authors", metavar="ORCID|\"Family, Given\"",
+                   help="creator(s) of the dataset (repeatable)")
+    s.add_argument("--set", action="append", dest="sets", metavar="property=value",
+                   help="set any root property, e.g. --set license=CC-BY-4.0 --set keywords=a,b")
 
     mf = sub.add_parser("mode-file", help="generate a Crate-O mode file (web editor config) from the profile")
     mf.add_argument("-o", "--out", required=True, help="output path for the mode file json")
@@ -84,27 +93,19 @@ def main(argv=None):
 
     if args.cmd == "issue-form":
         from .profile import load_profile
-        from .issue_form import write_issue_form, write_component_form
+        from .issue_form import write_issue_form
         import os
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-        if args.type_:
-            out = write_component_form(load_profile(args.repo), args.type_, args.out)
-        else:
-            out = write_issue_form(load_profile(args.repo), args.out)
+        out = write_issue_form(load_profile(args.repo), args.out, dirs=args.dirs, title=args.title)
         print(f"wrote {out}", file=sys.stderr)
-        return 0
-
-    if args.cmd == "describe-from-issue":
-        from .from_issue import apply_describe_issue
-        body = sys.stdin.read() if args.body == "-" else open(args.body, encoding="utf-8").read()
-        result = apply_describe_issue(args.repo, body, type_=args.type_, title=args.title)
-        print(json.dumps(result, indent=2), file=sys.stderr)
         return 0
 
     if args.cmd == "from-issue":
         from .from_issue import apply_issue
         body = sys.stdin.read() if args.body == "-" else open(args.body, encoding="utf-8").read()
         result = apply_issue(args.repo, body)
+        if args.print_command and result.get("command"):
+            print(result["command"])      # stdout: the equivalent `mate` command (for the comment)
         print(json.dumps(result, indent=2), file=sys.stderr)
         return 0
 
@@ -114,10 +115,17 @@ def main(argv=None):
         return 0
 
     if args.cmd == "describe":
-        from .describe import describe as describe_target
-        result = describe_target(args.repo, args.target, type_=args.type_, name=args.name,
-                                 description=args.description, sets=args.sets,
-                                 list_fields=args.list_fields)
+        from .describe import edit_entity
+        result = edit_entity(args.repo, args.target, type_=args.type_, name=args.name,
+                             description=args.description, authors=args.authors, sets=args.sets,
+                             list_fields=args.list_fields)
+        print(json.dumps(result, indent=2), file=sys.stderr)
+        return 0
+
+    if args.cmd == "seed":
+        from .describe import edit_entity
+        result = edit_entity(args.repo, ".", name=args.name, description=args.description,
+                             authors=args.authors, sets=args.sets)
         print(json.dumps(result, indent=2), file=sys.stderr)
         return 0
 
