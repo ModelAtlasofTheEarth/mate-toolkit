@@ -117,3 +117,44 @@ optional_entities:
   compute:                                           # → Service
     fields:
       uri:         { property: url }
+
+# ── Component types: the curated drop-down for `describe` ─────────────────────
+# ~5 useful types covering the 90%, each with a curated set of schema.org / CodeMeta
+# fields + prompts. Anything not here is still reachable via the escape hatch
+# (`mate describe ... --type <anySchemaType> --set <anyProperty>=<value>`) — full
+# flexibility, so nothing is boxed in. Terms resolve to schema.org / CodeMeta.
+component_types:
+  Dataset:
+    label: "Dataset — data / model inputs or outputs"
+    fields:
+      encodingFormat:      { label: "File format(s)", input: list, help: "e.g. application/x-hdf5, image/tiff" }
+      variableMeasured:    { label: "Variables", input: list, help: "e.g. temperature, velocity, viscosity" }
+      measurementTechnique: { label: "How it was produced", input: text }
+      contentSize:         { label: "Total size", input: text, help: "e.g. 40 GB" }
+  SoftwareSourceCode:
+    label: "Software source code — model code / scripts"
+    fields:
+      programmingLanguage: { label: "Language(s)", input: list }
+      runtimePlatform:     { label: "Runtime platform", input: text, help: "e.g. Python 3.11, MPI" }
+      softwareRequirements: { label: "Requirements / dependencies", input: text }
+      buildInstructions:   { label: "Build instructions", input: text, help: "text, or reference a script e.g. build.sh", vocab: codemeta }
+      codeRepository:      { label: "Source repository", input: text }
+  SoftwareApplication:
+    label: "Software application / framework — e.g. Underworld, ASPECT"
+    fields:
+      softwareVersion:     { label: "Version", input: text }
+      operatingSystem:     { label: "Operating system", input: text }
+      applicationCategory: { label: "Category", input: text }
+      url:                 { label: "Homepage / DOI", input: text }
+  ComputationalWorkflow:
+    label: "Computational workflow — a pipeline of steps"
+    fields:
+      programmingLanguage: { label: "Workflow language", input: text }
+      input:               { label: "Inputs", input: list }
+      output:              { label: "Outputs", input: list }
+  ImageObject:
+    label: "Image / figure"
+    fields:
+      caption:             { label: "Caption", input: text }
+      encodingFormat:      { label: "Format", input: text }
+      contentUrl:          { label: "URL (if hosted)", input: text }
