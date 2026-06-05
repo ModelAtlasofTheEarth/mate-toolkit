@@ -5,6 +5,7 @@ not hard-coded: required root fields + `requires_for_website`. Render is permiss
 validator is the gate (TARGET_ARCHITECTURE.md §6c).
 """
 from pathlib import Path
+from urllib.parse import unquote
 
 from .build_crate import build_crate
 from .profile import load_profile
@@ -67,14 +68,15 @@ def validate(repo_dir, reverse_engineer=False, profile=None, strict=False):
         if not _satisfied(req, root, by_id, graph):
             readiness.append(f"not website-eligible: requires {req!r}")
 
-    # 3) referenced local files must exist [structural — always hard]
+    # 3) referenced local files must exist [structural — always hard]. The @id is URL-encoded
+    #    per RO-Crate (a space becomes %20, etc.), so DECODE before hitting the filesystem.
     for e in graph:
         if e.get("@type") != "File":
             continue
         i = e.get("@id", "")
         if not i or i.startswith(("http", "#", "./")):
             continue
-        if not (repo_dir / i).exists():
+        if not (repo_dir / unquote(i)).exists():
             errors.append(f"crate references missing local file `{i}`")
 
     # 4) deep structural check via ro-crate-py on the ON-DISK crate (strict: hasPart
