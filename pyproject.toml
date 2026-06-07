@@ -7,7 +7,7 @@ name = "crate-kit"
 version = "0.0.1"
 description = "Link a GitHub repository to its RO-Crate: build the crate from the repo and render it."
 requires-python = ">=3.10"
-dependencies = ["rocrate", "pyyaml", "pathspec"]
+dependencies = ["rocrate", "pyyaml", "pathspec", "jmespath"]
 # NB: quarto is NOT a pip package — it comes from conda-forge (see environment.yml)
 # or the quarto-dev/quarto-actions/setup action in CI. Only `crate render` needs it.
 

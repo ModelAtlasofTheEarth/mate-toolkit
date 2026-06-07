@@ -1,17 +1,20 @@
-"""enrich: resolve the PIDs already in the crate (ORCID, publication DOI) and fold in a
-profile-bounded subset of what comes back. PID-first and BEST-EFFORT — a network failure or a
-missing field is skipped, never fatal. Resolved values are written into the crate and, being
-non-derived, are preserved across rebuilds (build-as-merge). Raw responses are not persisted
-here (kept minimal for MVP).
+"""enrich: resolve the PIDs in the crate and fold in metadata, driven entirely by the profile's
+declarative `enrich` CROSSWALK (no per-source code). PID-first and BEST-EFFORT — a network failure
+or a missing field is skipped, never fatal. GAP-FILL only: a property already set (authored) is
+never overwritten. Resolved values are non-derived, so build-as-merge preserves them.
 
-What to keep from each response is the profile's `enrich.<kind>.keep` list — config, not code.
+The engine is generic: for each entity whose @id matches a resolver's `match`, fetch the resolver's
+`url`, then for each `map` entry pull a JMESPath path out of the response (optionally via a named
+transform) and set the target property. SCOPE = exactly what the profile maps. Adding a niche
+resolver is a profile edit, not a code change.
 """
 import json
 import re
 import urllib.request
 from pathlib import Path
 
-from .build_crate import _root_entity
+import jmespath
+
 from .profile import load_profile
 
 
@@ -28,85 +31,86 @@ def _get_json(url, accept="application/json"):
         return None
 
 
-def _enrich_person(entity, keep):
-    oid = entity.get("@id", "")
-    if "orcid.org" not in oid:
-        return False
-    orcid = oid.rstrip("/").split("/")[-1]
-    data = _get_json(f"https://pub.orcid.org/v3.0/{orcid}/person")
+# ── named transforms (the toolkit's generic post-processors; profiles reference them by name) ──
+
+def _t_join(v, doc):
+    return " ".join(str(x) for x in v if x) if isinstance(v, list) else v
+
+
+def _t_join_date(v, doc):
+    return "-".join(f"{int(x):02d}" if i else str(x) for i, x in enumerate(v)) if isinstance(v, list) and v else v
+
+
+def _t_first(v, doc):
+    return v[0] if isinstance(v, list) and v else v
+
+
+def _t_people(v, doc):
+    """An array of author objects (Crossref shape) -> minted Person entities + @id references.
+    Anonymous inline objects don't round-trip through editors, so every author gets a real @id."""
+    refs = []
+    for a in (v or []):
+        nm = " ".join(x for x in (a.get("given"), a.get("family")) if x) if isinstance(a, dict) else None
+        if not nm:
+            continue
+        pid = a.get("ORCID") or ("#author-" + _slug(nm))
+        if not any(e.get("@id") == pid for e in doc["@graph"]):
+            doc["@graph"].append({"@id": pid, "@type": "Person", "name": nm})
+        refs.append({"@id": pid})
+    return refs or None
+
+
+TRANSFORMS = {"join": _t_join, "join_date": _t_join_date, "first": _t_first, "people": _t_people}
+
+
+def _pid(entity_id, cfg):
+    """Extract the API {id} from an entity @id, per the resolver config."""
+    pat = cfg.get("id_pattern")
+    if pat:
+        m = re.search(pat, entity_id)
+        return m.group(1) if m else None
+    marker = cfg["match"] + "/"
+    return entity_id.split(marker, 1)[1] if marker in entity_id else None
+
+
+def _resolver_for(entity_id, enrich_cfg):
+    for kind, cfg in enrich_cfg.items():
+        m = cfg.get("match")
+        if m and m in entity_id and cfg.get("url") and cfg.get("map"):
+            return kind, cfg
+    return None, None
+
+
+def _enrich_entity(entity, doc, enrich_cfg):
+    """Resolve one entity in place. Returns the resolver kind if anything was applied, else None."""
+    eid = entity.get("@id", "")
+    if not eid.startswith("http"):
+        return None
+    kind, cfg = _resolver_for(eid, enrich_cfg)
+    if not cfg:
+        return None
+    pid = _pid(eid, cfg)
+    if not pid:
+        return None
+    data = _get_json(cfg["url"].format(id=pid), cfg.get("accept", "application/json"))
     if not data:
-        return False
-    name = data.get("name") or {}
-    given = (name.get("given-names") or {}).get("value")
-    family = (name.get("family-name") or {}).get("value")
-    changed = False
-    if "givenName" in keep and given and not entity.get("givenName"):
-        entity["givenName"] = given; changed = True
-    if "familyName" in keep and family and not entity.get("familyName"):
-        entity["familyName"] = family; changed = True
-    full = " ".join(x for x in (given, family) if x)
-    if full and not entity.get("name"):
-        entity["name"] = full; changed = True
-    return changed
+        return None
 
-
-def _doi_of(ref):
-    cid = ref.get("@id", "") if isinstance(ref, dict) else ""
-    if "doi.org/" in cid:
-        return cid.split("doi.org/")[-1]
-    if cid.startswith("10."):
-        return cid
-    return None
-
-
-def _enrich_publication(doc, root, keep):
-    """Resolve every DOI referenced from root.citation (a dict or a list). Fills an existing stub
-    entity if present (e.g. one minted by `mate add publication`), else creates the entity.
-    Returns the list of resolved DOIs."""
-    cits = root.get("citation")
-    cits = cits if isinstance(cits, list) else ([cits] if cits else [])
-    by_id = {e.get("@id"): e for e in doc["@graph"]}
-    resolved = []
-    for cit in cits:
-        doi = _doi_of(cit)
-        if not doi:
-            continue
-        cid = cit["@id"]
-        existing = by_id.get(cid)
-        if existing and existing.get("name"):
-            continue  # already resolved
-        data = _get_json(f"https://api.crossref.org/works/{doi}")
-        if not data:
-            continue
-        m = data.get("message", {})
-        ent = existing or {"@id": cid, "@type": "ScholarlyArticle"}
-        if "name" in keep and m.get("title"):
-            ent["name"] = m["title"][0]
-        if "datePublished" in keep:
-            parts = (m.get("published") or {}).get("date-parts") or []
-            if parts and parts[0]:
-                ent["datePublished"] = "-".join(str(x) for x in parts[0])
-        if "url" in keep and m.get("URL"):
-            ent["url"] = m["URL"]
-        if "author" in keep and m.get("author"):
-            refs = []
-            for a in m["author"]:
-                nm = " ".join(x for x in (a.get("given"), a.get("family")) if x)
-                if not nm:
-                    continue
-                # give every author a real @id (ORCID if present, else a blank node) — anonymous
-                # inline objects don't round-trip safely through editors like Crate-O.
-                pid = a.get("ORCID") or ("#author-" + _slug(nm))
-                if not any(e.get("@id") == pid for e in doc["@graph"]):
-                    doc["@graph"].append({"@id": pid, "@type": "Person", "name": nm})
-                refs.append({"@id": pid})
-            if refs:
-                ent["author"] = refs
-        if not existing:
-            doc["@graph"].append(ent)
-            by_id[cid] = ent
-        resolved.append(doi)
-    return resolved
+    applied = False
+    for prop, spec in (cfg.get("map") or {}).items():
+        if entity.get(prop):
+            continue                                   # gap-fill only — never overwrite authored
+        path, tname = (spec, None) if isinstance(spec, str) else (spec.get("path"), spec.get("transform"))
+        try:
+            val = jmespath.search(path, data)
+        except Exception:
+            val = None
+        if tname:
+            val = TRANSFORMS.get(tname, lambda v, d: v)(val, doc)
+        if val not in (None, "", []):
+            entity[prop] = val
+            applied = True
+    return kind if applied else None
 
 
 def enrich(repo_dir, out_path=None):
@@ -115,19 +119,12 @@ def enrich(repo_dir, out_path=None):
     if not crate_path.exists():
         return {"error": "no crate to enrich (run build first)"}
 
-    keep = (load_profile(repo_dir).get("enrich", {}) or {})
-    person_keep = set((keep.get("author") or {}).get("keep", []))
-    pub_keep = set((keep.get("publication") or {}).get("keep", []))
-
+    enrich_cfg = load_profile(repo_dir).get("enrich", {}) or {}
     doc = json.loads(crate_path.read_text())
-    root = _root_entity(doc)
     resolved = []
-
-    for e in list(doc["@graph"]):
-        if e.get("@type") == "Person" and not e.get("name"):
-            if _enrich_person(e, person_keep):
-                resolved.append(e.get("@id"))
-    resolved += _enrich_publication(doc, root, pub_keep)
+    for e in list(doc["@graph"]):                      # snapshot: entities minted mid-run wait for next pass
+        if _enrich_entity(e, doc, enrich_cfg):
+            resolved.append(e.get("@id"))
 
     Path(out_path or crate_path).write_text(json.dumps(doc, indent=2))
     return {"resolved": resolved}

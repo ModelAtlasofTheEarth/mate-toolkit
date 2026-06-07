@@ -66,12 +66,46 @@ contextual:
     id_hint: "DOI or URL (Zenodo, NCI, …)"
     enrich: null
 
-# Enrichment keep-lists (generic PIDs: Crossref / ORCID / ROR).
+# Enrichment = a declarative CROSSWALK, and it IS the filter. Each resolver is keyed by the
+# contextual kind it serves and declares:
+#   match      — an @id substring that selects this resolver (orcid.org, doi.org, …)
+#   url        — the API to fetch; {id} is the PID pulled from the entity's @id
+#   id_pattern — (optional) regex (group 1) to extract {id}; default = everything after `match/`
+#   map        — target schema.org property  <-  a JMESPath path into the response,
+#                optionally `{ path: …, transform: <name> }`. SCOPE = exactly what you map;
+#                nothing else is pulled in. Built-in transforms: join · join_date · first · people.
+# A niche resolver (figshare, software-heritage, GRID, …) is added by appending a block here —
+# no engine code. The toolkit holds the generic fetch + JMESPath + transform registry.
 enrich:
-  publication:  { keep: [name, author, datePublished, url] }
-  author:       { keep: [givenName, familyName, "@id", affiliation] }
-  organization: { keep: [name, "@id"] }
-  software:     { keep: [name, url, softwareVersion] }
+  author:                                       # ORCID -> Person
+    match: "orcid.org"
+    url: "https://pub.orcid.org/v3.0/{id}/person"
+    map:
+      givenName:  'name."given-names".value'
+      familyName: 'name."family-name".value'
+      name:       { path: '[name."given-names".value, name."family-name".value]', transform: join }
+  publication:                                  # Crossref -> ScholarlyArticle
+    match: "doi.org"
+    url: "https://api.crossref.org/works/{id}"
+    map:
+      name:          "message.title[0]"
+      datePublished: { path: 'message.published."date-parts"[0]', transform: join_date }
+      url:           "message.URL"
+      author:        { path: "message.author", transform: people }
+  organization:                                 # ROR (v2) -> Organization (funders)
+    match: "ror.org"
+    url: "https://api.ror.org/v2/organizations/{id}"
+    map:
+      name: "names[?contains(types, 'ror_display')].value | [0]"
+      url:  "links[?type == 'website'].value | [0]"
+  software:                                     # Zenodo -> SoftwareApplication
+    match: "zenodo.org"
+    id_pattern: 'records/(\d+)'
+    url: "https://zenodo.org/api/records/{id}"
+    map:
+      name:            "metadata.title"
+      softwareVersion: "metadata.version"
+      url:             "links.html"
 
 # Generic catalogue gate.
 requires_for_website:

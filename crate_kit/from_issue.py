@@ -95,8 +95,12 @@ def apply_issue(repo_dir, body, out_path=None):
         doc = json.loads(crate_path.read_text())
         entity = next((e for e in doc["@graph"] if e.get("@id") == tid), None)
         if entity is not None:
-            entity["citation"] = {"@id": publication if publication.startswith("http")
-                                  else f"https://doi.org/{publication}"}
+            doi_url = (publication if publication.startswith("http")
+                       else f"https://doi.org/{publication}")
+            entity["citation"] = {"@id": doi_url}
+            # mint a stub so `enrich`'s entity-based crosswalk can resolve it (Crossref)
+            if not any(e.get("@id") == doi_url for e in doc["@graph"]):
+                doc["@graph"].append({"@id": doi_url, "@type": "ScholarlyArticle"})
             applied.append("citation")
             crate_path.write_text(json.dumps(doc, indent=2))
 
