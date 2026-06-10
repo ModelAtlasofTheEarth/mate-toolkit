@@ -37,6 +37,19 @@ jobs:
         with:
           fetch-depth: 0        # full history -> git provenance
 
+      - name: ensure issue-form labels exist
+        # GitHub issue forms can only APPLY a label that already exists; a fresh template repo has
+        # only the default labels, so `crate-edit` is silently dropped and the on-issue gate misses.
+        # Create it (idempotent) on every build so the label-gate matches even if a user edits the
+        # issue title. Needs issues:write (granted by the caller).
+        if: ${{ !endsWith(github.repository, '-template') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create crate-edit --repo "${{ github.repository }}" \
+            --color BFD4F2 --description "M@TE crate edit (issue forms)" --force || true
+
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-file: environment.yml
@@ -50,8 +63,14 @@ jobs:
         run: |
           printf '%s' "$ISSUE_BODY" > /tmp/issue.md
           # One generic edit-entity form (target defaults to root). --print-command writes the
-          # equivalent `crate` command to stdout; capture it for the confirmation comment.
-          crate from-issue . --body /tmp/issue.md --print-command > /tmp/crate_command.txt || true
+          # equivalent `crate` command to stdout; the JSON result (incl. any error) goes to stderr.
+          # Record ok/fail so the comment step NEVER reports a misleading success on a no-op.
+          if crate from-issue . --body /tmp/issue.md --print-command \
+               > /tmp/crate_command.txt 2> /tmp/crate_result.json; then
+            echo ok > /tmp/apply_status
+          else
+            echo fail > /tmp/apply_status
+          fi
 
       - name: build + validate
         shell: bash -el {0}
@@ -121,19 +140,33 @@ jobs:
           fi
 
       - name: comment on the submission issue
-        if: ${{ inputs.issue_number != '' }}
+        # ALWAYS comment when an issue triggered this — success OR failure. Never let a submission
+        # vanish silently (the v1 failure mode): if the apply failed, say why and how to retry.
+        if: ${{ inputs.issue_number != '' && inputs.issue_body != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          CMD=$(cat /tmp/crate_command.txt 2>/dev/null || true)
-          {
-            echo "✅ Applied to \`ro-crate-metadata.json\` — the single source of truth. Edit the crate (CLI / Crate-O), not this issue."
-            if [ -n "$CMD" ]; then
-              printf '\nThe command-line equivalent (run it locally next time to skip the round-trip):\n\n'
-              printf '```\n%s\n```\n' "$CMD"
-              echo "For type-specific fields, open the crate in Crate-O."
-            fi
-          } > /tmp/comment.md
+          STATUS=$(cat /tmp/apply_status 2>/dev/null || echo ok)
+          if [ "$STATUS" = "fail" ]; then
+            ERR=$(python3 -c "import json,sys;print(json.load(open('/tmp/crate_result.json')).get('error','(see the Actions log)'))" 2>/dev/null || echo "(see the Actions log)")
+            {
+              echo "⚠️ **Nothing was written to the crate** — I couldn't apply this submission."
+              echo ""
+              echo "**Reason:** $ERR"
+              echo ""
+              echo "Edit this issue to fix it and it'll retry automatically, or ask for help."
+            } > /tmp/comment.md
+          else
+            CMD=$(cat /tmp/crate_command.txt 2>/dev/null || true)
+            {
+              echo "✅ Applied to \`ro-crate-metadata.json\` — the single source of truth. Edit the crate (CLI / Crate-O), not this issue."
+              if [ -n "$CMD" ]; then
+                printf '\nThe command-line equivalent (run it locally next time to skip the round-trip):\n\n'
+                printf '```\n%s\n```\n' "$CMD"
+                echo "For type-specific fields, open the crate in Crate-O."
+              fi
+            } > /tmp/comment.md
+          fi
           gh issue comment "${{ inputs.issue_number }}" --body-file /tmp/comment.md
 
       - name: upload site artifact

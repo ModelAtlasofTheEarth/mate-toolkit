@@ -36,9 +36,10 @@ _ROOT_OPT = "(the dataset itself / root)"
 _TYPE_KEEP = "(keep current)"
 
 _INTRO_CONFIGURE = (
-    "Configure the dataset as a whole — title, description, license, creators. On submit, an "
-    "action writes these onto the crate's **root** entity (`ro-crate-metadata.json`, the single "
-    "source of truth). **Edit the crate afterwards (CLI / Crate-O), not by reopening this issue.**")
+    "Configure the dataset as a whole — title, description, license, creators. *(You can leave the "
+    "issue title above as-is — it's just a marker; the dataset's title is the field below.)* On "
+    "submit, an action writes these onto the crate's **root** entity (`ro-crate-metadata.json`, the "
+    "single source of truth). **Edit the crate afterwards (CLI / Crate-O), not by reopening this issue.**")
 _INTRO_DATA = (
     "Edit metadata for one **local file or folder** in this dataset (a *data entity*). Pick it "
     "above, then fill only what you want to set (blank = leave as-is). On submit, an action writes "
@@ -50,9 +51,11 @@ _INTRO_CONTEXTUAL = (
     "dataset, and `enrich` fills in the details. *(Local things — files/folders — are data "
     "entities; use the other forms for those.)*")
 
-_CONFIGURE_DEFAULTS = {"name": "Configure dataset (the whole crate)", "title": "[configure crate] ", "labels": ["crate-edit"]}
-_DATA_DEFAULTS = {"name": "Edit a data entity (a local file/folder)", "title": "[edit data] ", "labels": ["crate-edit"]}
-_CONTEXTUAL_DEFAULTS = {"name": "Add a contextual entity (a remote reference)", "title": "[add reference] ", "labels": ["crate-edit"]}
+# `title` is a COMPLETE default for the GitHub issue-title box (not just the gate prefix) — so the
+# box looks done and isn't mistaken for a second "title" field. The workflow only needs the prefix.
+_CONFIGURE_DEFAULTS = {"name": "Configure dataset (the whole crate)", "title": "[configure crate] dataset metadata", "labels": ["crate-edit"]}
+_DATA_DEFAULTS = {"name": "Edit a data entity (a local file/folder)", "title": "[edit data] (the entity selected below)", "labels": ["crate-edit"]}
+_CONTEXTUAL_DEFAULTS = {"name": "Add a contextual entity (a remote reference)", "title": "[add reference] (the reference below)", "labels": ["crate-edit"]}
 
 # Universal fields for ANY non-root data entity. Type-specific depth (programmingLanguage,
 # variableMeasured, …) is Crate-O's job — a static form can't reveal it per chosen type.
@@ -69,7 +72,7 @@ _INTRO_CONTENT = (
     "function* (graphical abstract, model-setup diagram, figure…). Pick the file and its role; "
     "an action records the role on the crate (as `additionalType`, keeping the file's structural "
     "type) and stores your caption. The role decides where the asset appears on the page.")
-_CONTENT_DEFAULTS = {"name": "Tag website content (a file's role)", "title": "[tag content] ", "labels": ["crate-edit"]}
+_CONTENT_DEFAULTS = {"name": "Tag website content (a file's role)", "title": "[tag content] (the file below)", "labels": ["crate-edit"]}
 
 
 def _role_specs(profile, dirs=None):
@@ -297,6 +300,13 @@ def refresh_forms(repo_dir, out_dir):
     crate_path = repo_dir / "ro-crate-metadata.json"
     graph = json.loads(crate_path.read_text())["@graph"] if crate_path.exists() else []
     written = []
+
+    # Static forms (no dynamic content) — regenerated too so they never drift from the engine/profile
+    # (e.g. a relabeled field, a new license option). Git-diff in the workflow only commits real changes.
+    for fn, kind in (("configure-crate.yml", "configure"), ("add-contextual-entity.yml", "contextual")):
+        if (out_dir / fn).exists():
+            write_form(profile, str(out_dir / fn), kind=kind)
+            written.append(fn)
 
     folders = sorted(e["@id"] for e in graph
                      if isinstance(e.get("@id"), str) and e["@id"].endswith("/")

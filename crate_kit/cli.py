@@ -169,7 +169,7 @@ def main(argv=None):
         if args.print_command and result.get("command"):
             print(result["command"])      # stdout: the equivalent `mate` command (for the comment)
         print(json.dumps(result, indent=2), file=sys.stderr)
-        return 0
+        return 1 if result.get("error") else 0   # non-zero on failure so the workflow can surface it
 
     if args.cmd == "enrich":
         if args.internal:

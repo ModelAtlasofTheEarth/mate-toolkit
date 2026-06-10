@@ -35,9 +35,9 @@ context:
 root:
   type: Dataset
   fields:
-    title:       { property: name,        required: true,  input: text,     label: "Title" }
+    title:       { property: name,        required: true,  input: text,     label: "Dataset title (the human-readable name, not the repo slug)" }
     description: { property: description,  required: true,  input: textarea, label: "Short description" }
-    license:     { property: license,      required: true,  input: text,     label: "License (SPDX id or URL)" }
+    license:     { property: license,      required: true,  input: dropdown, label: "License", options: [CC-BY-4.0, CC-BY-SA-4.0, CC0-1.0, Apache-2.0, MIT, GPL-3.0, LGPL-3.0, MPL-2.0, "(other URL)"] }
     creators:    { property: creator,      required: true,  input: people, many: true, label: "Creator(s) — ORCID iD or 'Family, Given'", enrich: author }
     keywords:    { property: keywords,     required: false, input: list, many: true, label: "Keywords" }
     publication: { property: citation,     required: false, input: text,     label: "Related publication (DOI)", enrich: publication }
